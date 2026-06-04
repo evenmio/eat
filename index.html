@@ -258,6 +258,36 @@ input,select,button,textarea{font-family:inherit;font-size:inherit}
   font-size:11px;font-weight:550;color:var(--c3);text-transform:uppercase;
   letter-spacing:.06em;padding:8px 0 4px;margin-top:4px;
 }
+
+/*--- Login overlay ---*/
+.overlay{
+  position:fixed;inset:0;z-index:200;
+  background:rgba(43,40,38,.55);
+  display:flex;align-items:center;justify-content:center;
+  padding:24px;backdrop-filter:blur(4px);
+}
+.overlay.hidden{display:none}
+.overlay-card{
+  background:#FAF8F4;border-radius:20px;padding:32px 24px 24px;
+  width:100%;max-width:320px;box-shadow:0 8px 48px rgba(0,0,0,.12);
+  text-align:center;
+}
+.overlay-title{font-size:24px;font-weight:680;color:var(--c);margin-bottom:4px}
+.overlay-desc{font-size:14px;color:var(--c2);line-height:1.5;margin-top:4px}
+.overlay-card .form-group{text-align:left}
+.overlay-card input{background:#F2EFE9}
+
+/*--- Sync status bar ---*/
+.sync-bar{
+  position:fixed;top:44px;left:50%;transform:translateX(-50%);
+  z-index:50;font-size:12px;color:#fff;
+  background:rgba(43,40,38,.7);
+  padding:3px 14px;border-radius:12px;
+  opacity:0;transition:opacity .2s;pointer-events:none;white-space:nowrap;
+}
+.sync-bar.show{opacity:1}
+.sync-bar.error{background:rgba(212,87,58,.8)}
+
 </style>
 </head>
 <body>
@@ -394,6 +424,33 @@ input,select,button,textarea{font-family:inherit;font-size:inherit}
     <div id="blacklistItems"></div>
   </div>
 
+  <div class="card" id="syncSection">
+    <div class="setting-item" style="border-bottom:none">
+      <div>
+        <div class="s-label">GitHub 同步</div>
+        <div class="s-desc" id="syncDesc">未连接</div>
+      </div>
+    </div>
+    <div class="setting-item">
+      <div>
+        <div class="s-desc">手动拉取云端数据</div>
+      </div>
+      <span class="s-action" id="syncPullBtn">拉取</span>
+    </div>
+    <div class="setting-item">
+      <div>
+        <div class="s-desc">主动推送到云端</div>
+      </div>
+      <span class="s-action" id="syncPushBtn">推送</span>
+    </div>
+    <div class="setting-item" style="border-bottom:none">
+      <div>
+        <div class="s-desc">断开连接（本地数据保留）</div>
+      </div>
+      <span class="s-action" id="syncDisconnectBtn" style="color:#B8B1A8">断开</span>
+    </div>
+  </div>
+
   <div class="card" style="text-align:center;padding:14px;color:var(--text3);font-size:13px">
     今天吃什么 v1.0
   </div>
@@ -420,6 +477,29 @@ input,select,button,textarea{font-family:inherit;font-size:inherit}
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
+<!-- Login Overlay -->
+<div class="overlay" id="loginOverlay">
+  <div class="overlay-card">
+    <div class="overlay-title">今天吃什么</div>
+    <div class="overlay-desc">连接 GitHub 同步数据<br>换设备也能用</div>
+    <div class="form-group" style="margin:20px 0 12px">
+      <label>GitHub Token</label>
+      <input type="password" id="tokenInput" placeholder="填入你的 Personal Access Token">
+    </div>
+    <div style="font-size:12px;color:var(--c2);margin-bottom:16px;line-height:1.6">
+      去 github.com/settings/tokens 生成<br>
+      勾选 <strong>gist</strong> 权限即可
+    </div>
+    <button class="btn-submit" id="loginBtn">连接 GitHub</button>
+    <div style="text-align:center;margin-top:12px">
+      <span style="font-size:13px;color:var(--c2);cursor:pointer" id="skipLoginBtn">先跳过，本地使用</span>
+    </div>
+  </div>
+</div>
+
+<!-- Sync loading -->
+<div class="sync-bar" id="syncBar"></div>
+
 <script>
 // ====== DEFAULT FOOD DATABASE ======
 const DEFAULT_FOODS = {
@@ -430,6 +510,125 @@ const DEFAULT_FOODS = {
 };
 const ALL_CATS = ["奶茶","吃饭","吃面","其他"];
 const DEF_AREAS = ["学校","家"];
+const GIST_ID = "778bfedc2ad02c797f0bd2b57b8e049f";
+
+// ====== GITHUB SYNC ======
+function getToken() { return localStorage.getItem("food_roulette_token") || ""; }
+function setToken(t) { localStorage.setItem("food_roulette_token", t); }
+function clearToken() { localStorage.removeItem("food_roulette_token"); }
+
+let syncTimer = null;
+let syncDebounce = null;
+let syncUserName = "";
+
+function showSyncBar(msg, isError) {
+  const el = document.getElementById("syncBar");
+  el.textContent = msg;
+  el.className = "sync-bar show" + (isError ? " error" : "");
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => el.classList.remove("show"), 3000);
+}
+
+async function syncPush() {
+  const token = getToken();
+  if (!token) return;
+  try {
+    const body = JSON.stringify({ description:"今天吃什么 - 同步数据", files:{"food-data.json":{content:JSON.stringify(state)}} });
+    const res = await fetch("https://api.github.com/gists/" + GIST_ID, {
+      method:"PATCH", headers:{"Authorization":"token "+token,"Content-Type":"application/json"}, body
+    });
+    if (!res.ok) throw new Error(res.status + "");
+    showSyncBar("同步完成");
+  } catch(e) { showSyncBar("同步失败", true); }
+}
+
+async function syncPull() {
+  const token = getToken();
+  if (!token) return;
+  try {
+    const res = await fetch("https://api.github.com/gists/" + GIST_ID, {
+      headers:{"Authorization":"token "+token,"Accept":"application/vnd.github+json"}
+    });
+    if (!res.ok) throw new Error(res.status + "");
+    const gist = await res.json();
+    const content = gist.files["food-data.json"].content;
+    const remote = JSON.parse(content);
+    if (remote && remote.orders) {
+      state = remote;
+      saveStateLocal();
+      renderAll();
+      showSyncBar("已拉取 " + remote.orders.length + " 条记录");
+    }
+  } catch(e) { showSyncBar("拉取失败", true); }
+}
+
+async function verifyToken(token) {
+  try {
+    const res = await fetch("https://api.github.com/user", {
+      headers:{"Authorization":"token "+token}
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.login;
+  } catch(e) { return null; }
+}
+
+async function doLogin(token) {
+  const user = await verifyToken(token);
+  if (!user) { showToast("Token 无效，请重新生成"); return false; }
+  setToken(token);
+  syncUserName = user;
+  document.getElementById("loginOverlay").classList.add("hidden");
+  showToast("已连接 GitHub（" + user + "）");
+  try {
+    const res = await fetch("https://api.github.com/gists/" + GIST_ID, {
+      headers:{"Authorization":"token "+token,"Accept":"application/vnd.github+json"}
+    });
+    if (res.ok) {
+      const gist = await res.json();
+      const content = gist.files["food-data.json"].content;
+      const remote = JSON.parse(content);
+      if (remote && remote.orders && remote.orders.length > 0) {
+        state = remote;
+        saveStateLocal();
+        renderAll();
+        showSyncBar("已加载云端数据");
+      }
+    }
+  } catch(e) {}
+  renderSyncStatus();
+  return true;
+}
+
+function doLogout() {
+  clearToken();
+  syncUserName = "";
+  document.getElementById("loginOverlay").classList.remove("hidden");
+  renderSyncStatus();
+  showToast("已断开");
+}
+
+function renderSyncStatus() {
+  const token = getToken();
+  const desc = document.getElementById("syncDesc");
+  if (token && syncUserName) desc.textContent = "已连接（" + syncUserName + "）";
+  else if (token) desc.textContent = "已连接";
+  else desc.textContent = "未连接";
+}
+
+// Separate local save so sync doesn't recurse
+function saveStateLocal() {
+  localStorage.setItem("food_roulette_data", JSON.stringify(state));
+}
+
+// saveState replaces the original from STATE section, debounces cloud sync
+function saveState() {
+  localStorage.setItem("food_roulette_data", JSON.stringify(state));
+  if (getToken()) {
+    clearTimeout(syncDebounce);
+    syncDebounce = setTimeout(syncPush, 2000);
+  }
+}
 
 // ====== STATE ======
 let state = loadState();
@@ -463,11 +662,6 @@ function loadState() {
   } catch(e) {}
   return defaultState();
 }
-
-function saveState() {
-  localStorage.setItem("food_roulette_data", JSON.stringify(state));
-}
-
 // ====== HELPERS ======
 function todayStr() {
   const d = new Date();
@@ -678,7 +872,7 @@ function switchTab(name) {
   document.querySelector(`[data-tab="${name}"]`).classList.add("active");
 
   if (name === "history") renderHistory();
-  if (name === "mine") { renderAreaTags(); renderBlacklist(); }
+  if (name === "mine") { renderAreaTags(); renderBlacklist(); renderSyncStatus(); }
   state.settings.lastTab = name;
   saveState();
 
@@ -699,6 +893,32 @@ function showToast(msg) {
 // ====== INIT ======
 function init() {
   renderAll();
+
+  // ---- GitHub Sync init ----
+  const savedToken = getToken();
+  if (savedToken) {
+    doLogin(savedToken);
+  } else {
+    renderSyncStatus();
+  }
+
+  // ---- Login ----
+  document.getElementById("loginBtn").addEventListener("click", () => {
+    const token = document.getElementById("tokenInput").value.trim();
+    if (!token) { showToast("请输入 Token"); return; }
+    doLogin(token);
+  });
+  document.getElementById("tokenInput").addEventListener("keydown", e => {
+    if (e.key === "Enter") document.getElementById("loginBtn").click();
+  });
+  document.getElementById("skipLoginBtn").addEventListener("click", () => {
+    document.getElementById("loginOverlay").classList.add("hidden");
+  });
+
+  // ---- Sync controls ----
+  document.getElementById("syncPushBtn").addEventListener("click", syncPush);
+  document.getElementById("syncPullBtn").addEventListener("click", syncPull);
+  document.getElementById("syncDisconnectBtn").addEventListener("click", doLogout);
 
   // ---- Tab switching ----
   document.querySelectorAll(".tab-btn").forEach(btn => {
