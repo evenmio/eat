@@ -627,6 +627,7 @@ async function doLogin(token) {
   showToast("已连接 GitHub（" + user + "）");
   // Find or create a Gist for this user
   const gistId = await ensureGist(token);
+  try {
   if (gistId) {
     const res = await gh("https://api.github.com/gists/" + gistId, {
       headers:{"Authorization":"token "+token}
