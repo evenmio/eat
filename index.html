@@ -516,12 +516,14 @@ const DEFAULT_FOODS = {
 };
 const ALL_CATS = ["奶茶","吃饭","吃面","其他"];
 const DEF_AREAS = ["学校","家"];
-const GIST_ID = "778bfedc2ad02c797f0bd2b57b8e049f";
 
 // ====== GITHUB SYNC ======
 function getToken() { return localStorage.getItem("food_roulette_token") || ""; }
 function setToken(t) { localStorage.setItem("food_roulette_token", t); }
 function clearToken() { localStorage.removeItem("food_roulette_token"); }
+function getGistId() { return localStorage.getItem("food_roulette_gist") || ""; }
+function setGistId(id) { localStorage.setItem("food_roulette_gist", id); }
+function clearGistId() { localStorage.removeItem("food_roulette_gist"); }
 
 let syncTimer = null;
 let syncDebounce = null;
@@ -537,10 +539,11 @@ function showSyncBar(msg, isError) {
 
 async function syncPush() {
   const token = getToken();
-  if (!token) return;
+  const gistId = getGistId();
+  if (!token || !gistId) return;
   try {
     const body = JSON.stringify({ description:"今天吃什么 - 同步数据", files:{"food-data.json":{content:JSON.stringify(state)}} });
-    const res = await fetch("https://api.github.com/gists/" + GIST_ID, {
+    const res = await fetch("https://api.github.com/gists/" + gistId, {
       method:"PATCH", headers:{"Authorization":"token "+token,"Content-Type":"application/json"}, body
     });
     if (!res.ok) throw new Error(res.status + "");
@@ -550,9 +553,10 @@ async function syncPush() {
 
 async function syncPull() {
   const token = getToken();
-  if (!token) return;
+  const gistId = getGistId();
+  if (!token || !gistId) return;
   try {
-    const res = await fetch("https://api.github.com/gists/" + GIST_ID, {
+    const res = await fetch("https://api.github.com/gists/" + gistId, {
       headers:{"Authorization":"token "+token,"Accept":"application/vnd.github+json"}
     });
     if (!res.ok) throw new Error(res.status + "");
@@ -566,6 +570,38 @@ async function syncPull() {
       showSyncBar("已拉取 " + remote.orders.length + " 条记录");
     }
   } catch(e) { showSyncBar("拉取失败", true); }
+}
+
+async function ensureGist(token) {
+  // Check if we know the Gist ID already
+  const existing = getGistId();
+  if (existing) {
+    const check = await fetch("https://api.github.com/gists/" + existing, {
+      headers:{"Authorization":"token "+token}
+    });
+    if (check.ok) return existing;
+  }
+  // List user's gists to find the one for this tool
+  const list = await fetch("https://api.github.com/gists?per_page=50", {
+    headers:{"Authorization":"token "+token,"Accept":"application/vnd.github+json"}
+  });
+  if (list.ok) {
+    const gists = await list.json();
+    const found = gists.find(g => g.description === "今天吃什么 - 同步数据");
+    if (found) { setGistId(found.id); return found.id; }
+  }
+  // Create new gist
+  const create = await fetch("https://api.github.com/gists", {
+    method:"POST",
+    headers:{"Authorization":"token "+token,"Content-Type":"application/json"},
+    body:JSON.stringify({ description:"今天吃什么 - 同步数据", public:false, files:{"food-data.json":{content:JSON.stringify(defaultState())}} })
+  });
+  if (create.ok) {
+    const gist = await create.json();
+    setGistId(gist.id);
+    return gist.id;
+  }
+  return null;
 }
 
 async function verifyToken(token) {
@@ -586,8 +622,10 @@ async function doLogin(token) {
   syncUserName = user;
   document.getElementById("loginOverlay").classList.add("hidden");
   showToast("已连接 GitHub（" + user + "）");
-  try {
-    const res = await fetch("https://api.github.com/gists/" + GIST_ID, {
+  // Find or create a Gist for this user
+  const gistId = await ensureGist(token);
+  if (gistId) {
+    const res = await fetch("https://api.github.com/gists/" + gistId, {
       headers:{"Authorization":"token "+token,"Accept":"application/vnd.github+json"}
     });
     if (res.ok) {
@@ -601,6 +639,7 @@ async function doLogin(token) {
         showSyncBar("已加载云端数据");
       }
     }
+  }
   } catch(e) {}
   renderSyncStatus();
   return true;
@@ -608,6 +647,7 @@ async function doLogin(token) {
 
 function doLogout() {
   clearToken();
+  clearGistId();
   syncUserName = "";
   document.getElementById("loginOverlay").classList.remove("hidden");
   renderSyncStatus();
