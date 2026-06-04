@@ -537,13 +537,16 @@ function showSyncBar(msg, isError) {
   syncTimer = setTimeout(() => el.classList.remove("show"), 3000);
 }
 
+const API_TIMEOUT = 8000;
+const gh = (url, opts) => fetch(url, { ...opts, signal: AbortSignal.timeout(API_TIMEOUT) });
+
 async function syncPush() {
   const token = getToken();
   const gistId = getGistId();
   if (!token || !gistId) return;
   try {
     const body = JSON.stringify({ description:"今天吃什么 - 同步数据", files:{"food-data.json":{content:JSON.stringify(state)}} });
-    const res = await fetch("https://api.github.com/gists/" + gistId, {
+    const res = await gh("https://api.github.com/gists/" + gistId, {
       method:"PATCH", headers:{"Authorization":"token "+token,"Content-Type":"application/json"}, body
     });
     if (!res.ok) throw new Error(res.status + "");
@@ -556,7 +559,7 @@ async function syncPull() {
   const gistId = getGistId();
   if (!token || !gistId) return;
   try {
-    const res = await fetch("https://api.github.com/gists/" + gistId, {
+    const res = await gh("https://api.github.com/gists/" + gistId, {
       headers:{"Authorization":"token "+token,"Accept":"application/vnd.github+json"}
     });
     if (!res.ok) throw new Error(res.status + "");
@@ -576,13 +579,13 @@ async function ensureGist(token) {
   // Check if we know the Gist ID already
   const existing = getGistId();
   if (existing) {
-    const check = await fetch("https://api.github.com/gists/" + existing, {
+    const check = await gh("https://api.github.com/gists/" + existing, {
       headers:{"Authorization":"token "+token}
     });
     if (check.ok) return existing;
   }
   // List user's gists to find the one for this tool
-  const list = await fetch("https://api.github.com/gists?per_page=50", {
+  const list = await gh("https://api.github.com/gists?per_page=50", {
     headers:{"Authorization":"token "+token,"Accept":"application/vnd.github+json"}
   });
   if (list.ok) {
@@ -591,7 +594,7 @@ async function ensureGist(token) {
     if (found) { setGistId(found.id); return found.id; }
   }
   // Create new gist
-  const create = await fetch("https://api.github.com/gists", {
+  const create = await gh("https://api.github.com/gists", {
     method:"POST",
     headers:{"Authorization":"token "+token,"Content-Type":"application/json"},
     body:JSON.stringify({ description:"今天吃什么 - 同步数据", public:false, files:{"food-data.json":{content:JSON.stringify(defaultState())}} })
@@ -606,7 +609,7 @@ async function ensureGist(token) {
 
 async function verifyToken(token) {
   try {
-    const res = await fetch("https://api.github.com/user", {
+    const res = await gh("https://api.github.com/user", {
       headers:{"Authorization":"token "+token}
     });
     if (!res.ok) return null;
@@ -625,8 +628,8 @@ async function doLogin(token) {
   // Find or create a Gist for this user
   const gistId = await ensureGist(token);
   if (gistId) {
-    const res = await fetch("https://api.github.com/gists/" + gistId, {
-      headers:{"Authorization":"token "+token,"Accept":"application/vnd.github+json"}
+    const res = await gh("https://api.github.com/gists/" + gistId, {
+      headers:{"Authorization":"token "+token}
     });
     if (res.ok) {
       const gist = await res.json();
@@ -956,10 +959,19 @@ function init() {
   }
 
   // ---- Login ----
-  document.getElementById("loginBtn").addEventListener("click", () => {
+  document.getElementById("loginBtn").addEventListener("click", async () => {
+    const btn = document.getElementById("loginBtn");
     const token = document.getElementById("tokenInput").value.trim();
     if (!token) { showToast("请输入 Token"); return; }
-    doLogin(token);
+    btn.textContent = "连接中...";
+    btn.disabled = true;
+    try {
+      await doLogin(token);
+    } catch(e) {
+      showToast("连接失败：" + e.message);
+    }
+    btn.textContent = "连接 GitHub";
+    btn.disabled = false;
   });
   document.getElementById("tokenInput").addEventListener("keydown", e => {
     if (e.key === "Enter") document.getElementById("loginBtn").click();
