@@ -299,6 +299,7 @@ input,select,button,textarea{font-family:inherit;font-size:inherit}
     <div class="source-hint" id="resultSrc"></div>
     <div class="result-actions">
       <button class="btn-outline" id="rerollBtn">换一个</button>
+      <button class="btn-outline" id="blacklistBtn" style="color:#B8B1A8">不好吃</button>
       <button class="btn-primary" id="recordBtn">吃过了</button>
     </div>
   </div>
@@ -360,7 +361,7 @@ input,select,button,textarea{font-family:inherit;font-size:inherit}
   </div>
 
   <div class="card">
-    <div class="setting-item">
+    <div class="setting-item" style="border-bottom:none">
       <div>
         <div class="s-label">导出数据</div>
         <div class="s-desc">下载 JSON 备份</div>
@@ -381,6 +382,16 @@ input,select,button,textarea{font-family:inherit;font-size:inherit}
       </div>
       <span class="s-action s-action-danger" id="clearBtn" style="color:#FF3B30">清除</span>
     </div>
+  </div>
+
+  <div class="card" id="blacklistSection">
+    <div class="setting-item" style="border-bottom:none">
+      <div>
+        <div class="s-label">不好吃清单</div>
+        <div class="s-desc">避雷的菜品不会再推荐</div>
+      </div>
+    </div>
+    <div id="blacklistItems"></div>
   </div>
 
   <div class="card" style="text-align:center;padding:14px;color:var(--text3);font-size:13px">
@@ -426,6 +437,7 @@ let state = loadState();
 function defaultState() {
   return {
     orders: [],
+    blacklist: [],
     areas: [...DEF_AREAS],
     settings: {
       currentArea: DEF_AREAS[0],
@@ -441,6 +453,7 @@ function loadState() {
     if (raw) {
       const data = JSON.parse(raw);
       // migrate missing fields
+      if (!data.blacklist) data.blacklist = [];
       if (!data.areas) data.areas = [...DEF_AREAS];
       if (!data.settings) data.settings = defaultState().settings;
       if (!data.settings.currentArea) data.settings.currentArea = data.areas[0] || DEF_AREAS[0];
@@ -488,16 +501,27 @@ function getRecommendation() {
     const cutoff = daysAgoStr(cooldown - 1);
     available = available.filter(o => o.date < cutoff);
   }
+  available = available.filter(o => !state.blacklist.includes(o.dish));
 
   if (available.length > 0) {
     const order = pick(available);
     return { type: "order", dish: order.dish, store: order.store, category: order.category, id: order.id };
   }
 
-  // Fallback: pure random
+  // Fallback: pure random — also respect blacklist
   const pool = cat === "随便" ? ALL_CATS : [cat];
-  const pickCat = pick(pool);
-  const dish = pick(DEFAULT_FOODS[pickCat]);
+  // Try categories until we find one with an un-blacklisted item
+  let pickCat, dish;
+  for (let tries = 0; tries < 5; tries++) {
+    pickCat = pick(pool);
+    const options = DEFAULT_FOODS[pickCat].filter(d => !state.blacklist.includes(d));
+    if (options.length > 0) { dish = pick(options); break; }
+  }
+  if (!dish) {
+    // Everything blacklisted, force pick anyway
+    pickCat = pick(pool);
+    dish = pick(DEFAULT_FOODS[pickCat]);
+  }
   return { type: "random", dish, store: null, category: pickCat, id: null };
 }
 
@@ -584,6 +608,20 @@ function renderCooldown() {
   val.textContent = state.settings.cooldownDays + "天";
 }
 
+function renderBlacklist() {
+  const el = document.getElementById("blacklistItems");
+  if (!state.blacklist.length) {
+    el.innerHTML = '<div class="empty-state" style="padding:16px 0">还没有避雷的菜品</div>';
+    return;
+  }
+  el.innerHTML = state.blacklist.map(d =>
+    `<div class="history-item" style="padding:8px 0">
+      <div class="h-info"><div class="h-dish">${d}</div></div>
+      <button class="h-del" data-dish="${d}">&#x2715;</button>
+    </div>`
+  ).join("");
+}
+
 function renderAll() {
   renderAreaChips();
   renderCatChips();
@@ -591,6 +629,7 @@ function renderAll() {
   renderHistory();
   renderAreaTags();
   renderCooldown();
+  renderBlacklist();
 
   // Set entry date
   document.getElementById("entryDate").value = todayStr();
@@ -639,7 +678,7 @@ function switchTab(name) {
   document.querySelector(`[data-tab="${name}"]`).classList.add("active");
 
   if (name === "history") renderHistory();
-  if (name === "mine") { renderAreaTags(); }
+  if (name === "mine") { renderAreaTags(); renderBlacklist(); }
   state.settings.lastTab = name;
   saveState();
 
@@ -690,6 +729,21 @@ function init() {
   // ---- Roll ----
   document.getElementById("rollBtn").addEventListener("click", doRoll);
   document.getElementById("rerollBtn").addEventListener("click", doRoll);
+
+  // ---- Blacklist ----
+  document.getElementById("blacklistBtn").addEventListener("click", () => {
+    if (!lastResult) return;
+    if (state.blacklist.includes(lastResult.dish)) {
+      showToast("已在清单中");
+      doRoll();
+      return;
+    }
+    state.blacklist.push(lastResult.dish);
+    saveState();
+    showToast("已避雷，不会再推荐 " + lastResult.dish);
+    renderBlacklist();
+    doRoll();
+  });
 
   // ---- Record ----
   document.getElementById("recordBtn").addEventListener("click", () => {
@@ -755,6 +809,17 @@ function init() {
     saveState();
     renderHistory();
     showToast("已删除");
+  });
+
+  // ---- Blacklist item delete ----
+  document.getElementById("blacklistItems").addEventListener("click", e => {
+    const btn = e.target.closest(".h-del");
+    if (!btn) return;
+    const dish = btn.dataset.dish;
+    state.blacklist = state.blacklist.filter(d => d !== dish);
+    saveState();
+    renderBlacklist();
+    showToast("已移除");
   });
 
   // ---- Add area ----
