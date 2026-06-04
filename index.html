@@ -443,6 +443,12 @@ input,select,button,textarea{font-family:inherit;font-size:inherit}
       </div>
       <span class="s-action" id="syncPushBtn">推送</span>
     </div>
+    <div class="setting-item">
+      <div>
+        <div class="s-desc">复制链接到新设备，自动连接</div>
+      </div>
+      <span class="s-action" id="syncCopyLinkBtn">复制链接</span>
+    </div>
     <div class="setting-item" style="border-bottom:none">
       <div>
         <div class="s-desc">断开连接（本地数据保留）</div>
@@ -896,7 +902,14 @@ function init() {
 
   // ---- GitHub Sync init ----
   const savedToken = getToken();
-  if (savedToken) {
+  // Check URL hash first (e.g. #token=ghp_xxx from "复制链接")
+  const hashMatch = location.hash.match(/token=([^&]+)/);
+  const hashToken = hashMatch ? decodeURIComponent(hashMatch[1]) : "";
+
+  if (hashToken && hashToken.startsWith("ghp_") && hashToken !== savedToken) {
+    doLogin(hashToken);
+    history.replaceState(null, "", location.pathname + location.search);
+  } else if (savedToken) {
     doLogin(savedToken);
   } else {
     renderSyncStatus();
@@ -919,6 +932,12 @@ function init() {
   document.getElementById("syncPushBtn").addEventListener("click", syncPush);
   document.getElementById("syncPullBtn").addEventListener("click", syncPull);
   document.getElementById("syncDisconnectBtn").addEventListener("click", doLogout);
+  document.getElementById("syncCopyLinkBtn").addEventListener("click", () => {
+    const token = getToken();
+    if (!token) { showToast("未连接"); return; }
+    const url = location.href.split("#")[0] + "#token=" + token;
+    navigator.clipboard.writeText(url).then(() => showToast("链接已复制，发到新设备打开就行")).catch(() => showToast("复制失败"));
+  });
 
   // ---- Tab switching ----
   document.querySelectorAll(".tab-btn").forEach(btn => {
