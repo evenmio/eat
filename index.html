@@ -393,6 +393,20 @@ input,select,button,textarea{font-family:inherit;font-size:inherit}
   <div class="card">
     <div class="setting-item" style="border-bottom:none">
       <div>
+        <div class="s-label">只看记录过的</div>
+        <div class="s-desc">开启后只从你吃过的里面随机</div>
+      </div>
+      <label style="position:relative;display:inline-block;width:44px;height:26px;flex-shrink:0;cursor:pointer">
+        <input type="checkbox" id="onlyHistoryToggle" style="opacity:0;width:0;height:0">
+        <span id="onlyHistoryTrack" style="position:absolute;inset:0;background:var(--c3);border-radius:13px;transition:.2s"></span>
+        <span id="onlyHistoryThumb" style="position:absolute;left:3px;top:3px;width:20px;height:20px;border-radius:50%;background:#fff;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,.15)"></span>
+      </label>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="setting-item" style="border-bottom:none">
+      <div>
         <div class="s-label">导出数据</div>
         <div class="s-desc">下载 JSON 备份</div>
       </div>
@@ -691,7 +705,8 @@ function defaultState() {
     settings: {
       currentArea: DEF_AREAS[0],
       cooldownDays: 3,
-      lastTab: "random"
+      lastTab: "random",
+      onlyHistory: false
     }
   };
 }
@@ -707,6 +722,7 @@ function loadState() {
       if (!data.settings) data.settings = defaultState().settings;
       if (!data.settings.currentArea) data.settings.currentArea = data.areas[0] || DEF_AREAS[0];
       if (data.settings.cooldownDays === undefined) data.settings.cooldownDays = 3;
+      if (data.settings.onlyHistory === undefined) data.settings.onlyHistory = false;
       return data;
     }
   } catch(e) {}
@@ -737,36 +753,47 @@ function getRecommendation() {
   const area = state.settings.currentArea;
   const cat = getSelectedCat();
   const cooldown = state.settings.cooldownDays;
+  const onlyHistory = state.settings.onlyHistory;
 
-  // Filter available orders
-  let available = state.orders.filter(o => o.area === area);
-  if (cat !== "随便") available = available.filter(o => o.category === cat);
+  // Pool 1: history orders (filtered by area/category/cooldown/blacklist)
+  let historyPool = state.orders.filter(o => o.area === area);
+  if (cat !== "随便") historyPool = historyPool.filter(o => o.category === cat);
   if (cooldown > 0) {
     const cutoff = daysAgoStr(cooldown - 1);
-    available = available.filter(o => o.date < cutoff);
+    historyPool = historyPool.filter(o => o.date < cutoff);
   }
-  available = available.filter(o => !state.blacklist.includes(o.dish));
+  historyPool = historyPool.filter(o => !state.blacklist.includes(o.dish));
 
-  if (available.length > 0) {
-    const order = pick(available);
-    return { type: "order", dish: order.dish, store: order.store, category: order.category, id: order.id };
+  // Pool 2: default database (filtered by category/blacklist)
+  let defaultPool = [];
+  const defCats = cat === "随便" ? ALL_CATS : [cat];
+  defCats.forEach(c => {
+    DEFAULT_FOODS[c].forEach(dish => {
+      if (!state.blacklist.includes(dish)) {
+        defaultPool.push({ dish, category: c });
+      }
+    });
+  });
+
+  // Merge
+  const merged = [];
+  // Type "order" entries
+  historyPool.forEach(o => merged.push({
+    type: "order", dish: o.dish, store: o.store, category: o.category, id: o.id
+  }));
+  // Type "random" entries (only if not in onlyHistory mode)
+  if (!onlyHistory) {
+    defaultPool.forEach(d => merged.push({
+      type: "random", dish: d.dish, store: null, category: d.category, id: null
+    }));
   }
 
-  // Fallback: pure random — also respect blacklist
-  const pool = cat === "随便" ? ALL_CATS : [cat];
-  // Try categories until we find one with an un-blacklisted item
-  let pickCat, dish;
-  for (let tries = 0; tries < 5; tries++) {
-    pickCat = pick(pool);
-    const options = DEFAULT_FOODS[pickCat].filter(d => !state.blacklist.includes(d));
-    if (options.length > 0) { dish = pick(options); break; }
+  if (merged.length === 0) {
+    // Everything filtered out — show nothing
+    return null;
   }
-  if (!dish) {
-    // Everything blacklisted, force pick anyway
-    pickCat = pick(pool);
-    dish = pick(DEFAULT_FOODS[pickCat]);
-  }
-  return { type: "random", dish, store: null, category: pickCat, id: null };
+
+  return pick(merged);
 }
 
 // ====== UI RENDERING ======
@@ -866,6 +893,15 @@ function renderBlacklist() {
   ).join("");
 }
 
+function renderOnlyHistoryToggle() {
+  const cb = document.getElementById("onlyHistoryToggle");
+  if (cb) cb.checked = state.settings.onlyHistory;
+  const track = document.getElementById("onlyHistoryTrack");
+  const thumb = document.getElementById("onlyHistoryThumb");
+  if (track) track.style.background = state.settings.onlyHistory ? "var(--primary)" : "var(--c3)";
+  if (thumb) thumb.style.transform = state.settings.onlyHistory ? "translateX(18px)" : "translateX(0)";
+}
+
 function renderAll() {
   renderAreaChips();
   renderCatChips();
@@ -874,6 +910,7 @@ function renderAll() {
   renderAreaTags();
   renderCooldown();
   renderBlacklist();
+  renderOnlyHistoryToggle();
 
   // Set entry date
   document.getElementById("entryDate").value = todayStr();
@@ -885,7 +922,16 @@ let lastResult = null;
 function showResult(result) {
   lastResult = result;
   const card = document.getElementById("resultCard");
-  // Set category background class
+  if (!result) {
+    card.className = "result-card show";
+    document.getElementById("resultDish").textContent = "没找到";
+    document.getElementById("resultStore").textContent = "";
+    document.getElementById("resultCat").textContent = "";
+    document.getElementById("resultLabel").textContent = "这个条件下没有可选的";
+    document.getElementById("resultSrc").textContent = "试试调整筛选条件";
+    card.classList.remove("shuffling");
+    return;
+  }
   card.className = "result-card cat-" + result.category;
   document.getElementById("resultDish").textContent = result.dish;
   document.getElementById("resultStore").textContent = result.store || "（随机推荐）";
@@ -1062,6 +1108,13 @@ function init() {
     state.settings.cooldownDays = v;
     document.getElementById("cooldownVal").textContent = v + "天";
     saveState();
+  });
+
+  // ---- Only-history toggle ----
+  document.getElementById("onlyHistoryToggle").addEventListener("change", e => {
+    state.settings.onlyHistory = e.target.checked;
+    saveState();
+    renderOnlyHistoryToggle();
   });
 
   // ---- Entry form ----
